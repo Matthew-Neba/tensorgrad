@@ -1,4 +1,16 @@
 """
+Architecture Overview: 
+
+Tensor (logical layer)
+  ├── shape, strides, grad, _children, _backward   ← always lives here
+  └── storage: Storage                              ← backend-specific
+
+Storage (abstract interface)
+  ├── ListStorage      ← current impl, will need to abstract away after basics are done
+  ├── NumpyStorage     ← next step
+  └── CudaStorage / MetalStorage (later)
+
+
 This will be like micrograd, but will operate over tensors implemented as python lists (can use NumPy later is wanting to). Also we will be generic with the data types for now but in the future, we will need a field dtype. Allows us to later use numpy and all it's benefits. see: ../speed_of_numpy.md
 
 --> Since python lists are flat, begin my making a function to get a specific index  
@@ -60,33 +72,69 @@ Features:
 
 """
 
-# data --> 1D array representing the data
+# data --> 1D array representing the data, will be converting to storage later per architecture at start
 # shape --> how the tensor looks like to the user/ its current state
 # strides --> used to obtain sepcific elements for each index in shape , i.e: used to translate between shape and actual data values
 import math
 class Tensor:
-    def __init__(self, data: list, shape: tuple):
+    """Minimal tensor with flat storage, shape metadata, and autograd placeholders."""
+
+    def __init__(self, data: list, shape: tuple | list | None = None):
+        """Create a tensor from nested data (infer shape) or flat data plus explicit shape."""
         # Always validate entry points of data, most validation needs to happen here
         # not enough elements
-        if len(data) != math.prod(shape):
-            raise ValueError("insufficient length of data to produce tensor")
-        
         if not isinstance(data, (tuple,list)):
             raise TypeError("data should be a list/tuple")
         
-        if not isinstance(shape, (tuple,list)):
-            raise TypeError("shape should be a list/tuple")
-        
-        self.data = list(data)
-        # defensive programming, even though expecting tuple
-        self.shape = tuple(shape)
+        # we were given a nested list, we need to infer the shape and flatten the array
+        if not shape:
+            self.data = self._flatten(data)
+            self.shape = self._infer_shape(data)
+        else:
+            if not isinstance(shape, tuple):
+                raise TypeError("shape should be a tuple/list")
+            
+            if math.prod(shape) != len(data):
+                raise ValueError("input data does not have enough elements for the specified shape")
+            
+            self.data = list(data)
+            self.shape = tuple(shape)
+
         self.strides = compute_strides(self.shape)
         self.grad = None
         self._backward = lambda: None
         self._children = []
+
+    def _infer_shape(self, data: list | tuple) -> tuple:
+        """Infer tensor shape by descending through nested list/tuple levels."""
+        shape = []
+        current = data
+        while isinstance(current, (list, tuple)):
+            shape.append(len(current))
+            current = current[0]
+        
+        return tuple(shape)
+
+    def _flatten(self, data: list | tuple):
+        """Yield scalar elements from nested list/tuple data in row-major order."""
+        for item in data:
+            if isinstance(item, (list, tuple)):
+                yield from self._flatten(item)
+            else:
+                yield item
     
+    @classmethod
+    def zeros(cls,shape: tuple) -> "Tensor":
+        """Return a tensor of the given shape filled with zeros."""
+        return cls([0] * math.prod(shape), shape)
+
+    @classmethod
+    def ones(cls,shape: tuple) -> "Tensor":
+        """Return a tensor of the given shape filled with ones."""
+        return cls([1] * math.prod(shape), shape)
 
     def _position_from_indices(self, indices) -> int:
+        """Convert N-D indices into a flat storage position using strides."""
         if len(indices) != len(self.shape):
             raise IndexError("wrong number of indices")
 
@@ -100,15 +148,18 @@ class Tensor:
     # get the data point at indices (respects tensor shape)
     # indices is 0-indexed as usual
     def get(self, indices):
+        """Read one tensor element at the provided N-D index tuple/list."""
         pos = self._position_from_indices(indices)
         return self.data[pos]
 
     def set(self, indices, val):
+        """Write one tensor element at the provided N-D index tuple/list."""
         pos = self._position_from_indices(indices)
         self.data[pos] = val
 
     # this is not the full optimizations even, partial reshapes can break this contiguity but still not require a copy. Can take a look at numpy to see how they fully do it later. This will be used in the reshape algo
     def _is_contiguous(self) -> bool:
+        """Check whether current shape/strides represent contiguous row-major layout."""
         expected_stride = 1
         for i in range(len(self.shape) - 1, -1, -1):
             if self.shape[i] == 1:
@@ -118,21 +169,37 @@ class Tensor:
             expected_stride *= self.shape[i]
         return True
     
-    def reshape():
+    def reshape(self):
+        """Return a view/copy with a new shape."""
         pass
 
-    # take a look at the .T notation in python
-    def transpose():
+    @property
+    def T(self):
+        return self._transpose()
+    
+    def _transpose(self):
+        """Reverse tensor axes. Can even later implement it as a permutation of the axis"""
+        # we can just invert the strides and shape of the last two dimensions. Can eve
+
+
         pass
         
-    def broadcast():
+    def broadcast(self):
+        """Expand tensor view to a broadcast-compatible shape"""
         pass
 
+    
+    def  __len__(self) -> int:
+        """Return total number of elements in the tensor."""
+        return math.prod(self.shape)
+        
     def __repr__(self):
+        """Return a debug-friendly string representation."""
         return f"Tensor(shape: {self.shape}, data: {self.data})"
 
 
 def compute_strides(shape):
+    """Compute row-major strides for a given shape."""
     strides = [0] * len(shape)
     cur_stride = 1
     for i in range(len(shape) - 1, -1,-1):
@@ -143,6 +210,7 @@ def compute_strides(shape):
 
 # this will be a generator, kind of like the range function in python
 def ndindex(shape: tuple):
+    """Yield all valid N-D index tuples for the provided shape."""
     def helper(dim):
         if dim == len(shape):
             yield ()
@@ -154,12 +222,6 @@ def ndindex(shape: tuple):
 
     yield from helper(0)
 
-def zeros(shape: tuple) -> Tensor:
-    return Tensor([0] * math.prod(shape), shape)
 
-def ones(shape: tuple) -> Tensor:
-    return Tensor([1] * math.prod(shape), shape)
-
-
-test_T = ones((2,3,4))
+test_T = Tensor.ones((2,3,4))
 print(test_T)
