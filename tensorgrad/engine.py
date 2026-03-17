@@ -17,9 +17,11 @@ This will be like micrograd, but will operate over tensors implemented as python
 
  Fields in a tensor:
  - data
- - grad (gradient of loss with respect to each value in tensor, same shape as tensor)
  - shape
  - stride (for movement ops)
+ - offset
+ - op
+ - grad (gradient of loss with respect to each value in tensor, same shape as tensor)
  - _children (for the computation graph)
  - _backward (function to backpropagate the gradient to the children)
 
@@ -78,8 +80,11 @@ Features:
 import math
 class Tensor:
     """Minimal tensor with flat storage, shape metadata, and autograd placeholders."""
-
-    def __init__(self, data: list, shape: tuple | list | None = None):
+    def __init__(
+        self,
+        data: list,
+        shape: tuple | list | None = None,
+    ):
         """Create a tensor from nested data (infer shape) or flat data plus explicit shape."""
         # Always validate entry points of data, most validation needs to happen here
         # not enough elements
@@ -91,7 +96,7 @@ class Tensor:
             self.data = self._flatten(data)
             self.shape = self._infer_shape(data)
         else:
-            if not isinstance(shape, tuple):
+            if not isinstance(shape, (tuple, list)):
                 raise TypeError("shape should be a tuple/list")
             
             if math.prod(shape) != len(data):
@@ -100,10 +105,26 @@ class Tensor:
             self.data = list(data)
             self.shape = tuple(shape)
 
+        self.offset = 0
+        self.op = None
         self.strides = compute_strides(self.shape)
         self.grad = None
         self._backward = lambda: None
         self._children = []
+    
+    # more flexible creation of a tensor
+    @classmethod
+    def _make_tensor(cls, data: list|tuple, shape:tuple, strides:tuple, offset:int, op:str) -> "Tensor":
+        t_view = cls.__new__(cls)
+
+        t_view.data = data
+        t_view.offset = offset
+        t_view.shape = shape
+        t_view.strides = strides
+        t_view.op = op
+
+        # TODO: will have to later handle grad stuff, perhaps in the function that calls this method
+        return t_view
 
     def _infer_shape(self, data: list | tuple) -> tuple:
         """Infer tensor shape by descending through nested list/tuple levels."""
@@ -124,12 +145,12 @@ class Tensor:
                 yield item
     
     @classmethod
-    def zeros(cls,shape: tuple) -> "Tensor":
+    def zeros(cls, *shape:int) -> "Tensor":
         """Return a tensor of the given shape filled with zeros."""
         return cls([0] * math.prod(shape), shape)
 
     @classmethod
-    def ones(cls,shape: tuple) -> "Tensor":
+    def ones(cls,*shape:int) -> "Tensor":
         """Return a tensor of the given shape filled with ones."""
         return cls([1] * math.prod(shape), shape)
 
@@ -138,7 +159,7 @@ class Tensor:
         if len(indices) != len(self.shape):
             raise IndexError("wrong number of indices")
 
-        pos = 0
+        pos = self.offset
         for i, val in enumerate(indices):
             if val < 0 or val >= self.shape[i]:
                 raise IndexError("index out of range")
@@ -169,26 +190,47 @@ class Tensor:
             expected_stride *= self.shape[i]
         return True
     
-    def reshape(self):
-        """Return a view/copy with a new shape."""
-        pass
-
-    @property
-    def T(self):
-        return self._transpose()
-    
-    def _transpose(self):
-        """Reverse tensor axes. Can even later implement it as a permutation of the axis"""
-        # we can just invert the strides and shape of the last two dimensions. Can eve
-
-
-        pass
-        
+    # TODO , ALL Movement ops are currently not handling grads and backwards/children. Will later
+    # need for backpropagation
     def broadcast(self):
         """Expand tensor view to a broadcast-compatible shape"""
+
         pass
 
+    def reshape(self, new_shape: tuple|list) -> "Tensor":
+        """Return a view/copy with a new shape."""
+        if not math.prod(new_shape) == math.prod(self.shape):
+            raise ValueError("count of elements in the new shape don't match the count in the current shape")
+
+        if self._is_contiguous():
+            view = Tensor._make_tensor(self.data, new_shape, compute_strides(new_shape), self.offset,  "reshape")
+            return view
+        else:
+            # neew to make a copy of the data, get the correct current order
+            flat = [self.data[self._position_from_indices(idx)] for idx in ndindex(self.shape)]
+            return Tensor._make_tensor(flat, new_shape, compute_strides(new_shape), 0, op="reshape_copy")
+        
+    @property
+    def T(self):
+        # call permute with correct arguments to only flip the last two dimensions
+        if len(self.shape) != 2:
+            raise ValueError("T only valid for 2D Tensors currently")
+        
+        return self.permute(1, 0)
     
+    def permute(self, *permutation):
+        """ Given a permutation of the new dimensions, return a new view of the tensor with the axis
+        reversed. May or may not copy the underlying data structure. Does not when possible.
+        """
+        new_shape = [self.shape[x] for x in permutation]
+        new_strides = [self.strides[x] for x in permutation]
+
+        op = "transpose" if permutation == (1,0) else "permute"
+        view = self._make_tensor(self.data, new_shape, new_strides, self.offset, op)
+
+        return view
+        
+
     def  __len__(self) -> int:
         """Return total number of elements in the tensor."""
         return math.prod(self.shape)
