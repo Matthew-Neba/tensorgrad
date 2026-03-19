@@ -192,11 +192,36 @@ class Tensor:
     
     # TODO , ALL Movement ops are currently not handling grads and backwards/children. Will later
     # need for backpropagation
-    def broadcast(self):
+
+    # user facing api for broadcasting
+    def broadcast_to(self, to_shape: list | tuple) -> "Tensor":
+        if len(to_shape) < len(self.shape):
+            raise ValueError("cannot broadcast to less dimensions")
+        return self._broadcast(to_shape)
+
+    # internal broadcasting helper
+    def _broadcast(self, to_shape: list | tuple) -> "Tensor":
+        # 1) Use rules to figure out broadcast dimensions, give them
+        # 2) Use those broadcast dimensions with stride 0 in relevant fields to broadcast a tensor
         """Expand tensor view to a broadcast-compatible shape"""
+        new_strides = [0] * len(to_shape)
 
-        pass
+        to_i , from_j = len(to_shape) - 1, len(self.shape) - 1
+        while to_i >= 0:
+            if from_j < 0:
+                new_strides[to_i] = 0
+            elif self.shape[from_j] == to_shape[to_i]:
+                new_strides[to_i] = self.strides[from_j]
+            elif self.shape[from_j] == 1:
+                new_strides[to_i] = 0
+            else:
+                raise ValueError(f"cannot broadcast dim {from_j}: size {self.shape[from_j]} into {to_shape[to_i]}")
 
+            to_i -= 1
+            from_j -= 1
+
+        return Tensor._make_tensor(self.data, tuple(to_shape), new_strides, self.offset, "_broadcast")
+    
     def reshape(self, new_shape: tuple|list) -> "Tensor":
         """Return a view/copy with a new shape."""
         if not math.prod(new_shape) == math.prod(self.shape):
@@ -230,7 +255,6 @@ class Tensor:
 
         return view
         
-
     def  __len__(self) -> int:
         """Return total number of elements in the tensor."""
         return math.prod(self.shape)
@@ -239,6 +263,19 @@ class Tensor:
         """Return a debug-friendly string representation."""
         return f"Tensor(shape: {self.shape}, data: {self.data})"
 
+
+def broadcast_shape(shape1: tuple, shape2: tuple) -> tuple:
+    out = []
+    i, j = len(shape1) - 1, len(shape2) - 1
+    while i >= 0 or j >= 0:
+        a = shape1[i] if i >= 0 else 1
+        b = shape2[j] if j >= 0 else 1
+        if a != b and a != 1 and b != 1:
+            raise ValueError(f"shapes {shape1} and {shape2} are not broadcast compatible")
+        out.append(max(a, b))
+        i -= 1
+        j -= 1
+    return tuple(reversed(out))
 
 def compute_strides(shape):
     """Compute row-major strides for a given shape."""
