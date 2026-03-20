@@ -93,9 +93,10 @@ class Tensor:
         
         # we were given a nested list, we need to infer the shape and flatten the array
         if not shape:
-            self.data = self._flatten(data)
+            self.data = list(self._flatten(data))
             self.shape = self._infer_shape(data)
         else:
+            # if we were given shape, expected to be given data aswell
             if not isinstance(shape, (tuple, list)):
                 raise TypeError("shape should be a tuple/list")
             
@@ -106,7 +107,7 @@ class Tensor:
             self.shape = tuple(shape)
 
         self.offset = 0
-        self.op = None
+        self.op = "create"
         self.strides = compute_strides(self.shape)
         self.grad = None
         self._backward = lambda: None
@@ -114,17 +115,26 @@ class Tensor:
     
     # more flexible creation of a tensor
     @classmethod
-    def _make_tensor(cls, data: list|tuple, shape:tuple, strides:tuple, offset:int, op:str) -> "Tensor":
+    def _make_tensor(cls, data: list|tuple, shape: tuple | list, strides: tuple | list, offset: int, op: str) -> "Tensor":
         t_view = cls.__new__(cls)
 
-        t_view.data = data
+        t_view.data = data if isinstance(data, list) else list(data)
         t_view.offset = offset
-        t_view.shape = shape
-        t_view.strides = strides
+        t_view.shape = tuple(shape)
+        t_view.strides = tuple(strides)
         t_view.op = op
+        t_view.grad = None
+        t_view._backward = lambda: None
+        t_view._children = []
 
-        # TODO: will have to later handle grad stuff, perhaps in the function that calls this method
         return t_view
+
+    @staticmethod
+    def _normalize_shape_args(shape: tuple[int, ...]) -> tuple[int, ...]:
+        """Accept either variadic dims or a single tuple/list of dims."""
+        if len(shape) == 1 and isinstance(shape[0], (tuple, list)):
+            return tuple(shape[0])
+        return tuple(shape)
 
     def _infer_shape(self, data: list | tuple) -> tuple:
         """Infer tensor shape by descending through nested list/tuple levels."""
@@ -147,11 +157,13 @@ class Tensor:
     @classmethod
     def zeros(cls, *shape:int) -> "Tensor":
         """Return a tensor of the given shape filled with zeros."""
+        shape = cls._normalize_shape_args(shape)
         return cls([0] * math.prod(shape), shape)
 
     @classmethod
     def ones(cls,*shape:int) -> "Tensor":
         """Return a tensor of the given shape filled with ones."""
+        shape = cls._normalize_shape_args(shape)
         return cls([1] * math.prod(shape), shape)
 
     def _position_from_indices(self, indices) -> int:
@@ -220,7 +232,7 @@ class Tensor:
             to_i -= 1
             from_j -= 1
 
-        return Tensor._make_tensor(self.data, tuple(to_shape), new_strides, self.offset, "_broadcast")
+        return Tensor._make_tensor(self.data, tuple(to_shape), tuple(new_strides), self.offset, "_broadcast")
     
     def reshape(self, new_shape: tuple|list) -> "Tensor":
         """Return a view/copy with a new shape."""
@@ -265,19 +277,24 @@ class Tensor:
 
 
 def broadcast_shape(shape1: tuple, shape2: tuple) -> tuple:
-    out = []
+    """Return the broadcasted output shape for two input shapes."""
+    new_shape = []
     i, j = len(shape1) - 1, len(shape2) - 1
     while i >= 0 or j >= 0:
         a = shape1[i] if i >= 0 else 1
         b = shape2[j] if j >= 0 else 1
+
         if a != b and a != 1 and b != 1:
-            raise ValueError(f"shapes {shape1} and {shape2} are not broadcast compatible")
-        out.append(max(a, b))
+            raise ValueError(f"two shapes not compatible on dimensions: (shape1 : {i}, shape2: {j})")
+
+        new_shape.append(max(a, b))
         i -= 1
         j -= 1
-    return tuple(reversed(out))
+    return tuple(reversed(new_shape))
+    
+    
 
-def compute_strides(shape):
+def compute_strides(shape: tuple) -> tuple:
     """Compute row-major strides for a given shape."""
     strides = [0] * len(shape)
     cur_stride = 1
@@ -302,5 +319,6 @@ def ndindex(shape: tuple):
     yield from helper(0)
 
 
-test_T = Tensor.ones((2,3,4))
-print(test_T)
+if __name__ == "__main__":
+    test_T = Tensor.ones(2, 3, 4)
+    print(test_T)
